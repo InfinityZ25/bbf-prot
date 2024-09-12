@@ -2,12 +2,15 @@
 name = "bbf-prot"
 version = "0.1.0"
 description = ""
-authors = ["jcedeno <jcedeno.us+infinity@gmail.com>"]
+authors = ["jcedeno <jcedeno@aseprob.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
 pymongo = "^4.8.0"
+matplotlib = "^3.9.2"
+pytest = "^8.3.3"
+jupyter = "^1.1.1"
 
 
 [build-system]

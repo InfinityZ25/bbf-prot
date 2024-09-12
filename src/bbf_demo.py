@@ -1,3 +1,17 @@
+"""
+Bank Balance Forward (BBF) Demo Module
+
+This module implements a bank balance forward operation for a simulated banking system.
+It includes functions for seeding a database with transaction data, performing balance
+forward calculations, and managing ledger line items.
+
+Key components:
+- seed_database: Populates the database with sample transaction data.
+- bank_balance_forward: Performs the balance forward operation based on a time threshold.
+- Various utility functions for date manipulation and data generation.
+
+The module interacts with a MongoDB database to store and process financial transactions.
+"""
 import random
 from datetime import UTC, datetime, timedelta
 
@@ -10,6 +24,25 @@ db = client['items']
 
 
 def seed_database(num_documents=1000000, batch_size=5000):
+    """
+    Seed the database with a specified number of documents.
+
+    This function clears existing data in the ledger_line_items collection
+    and populates it with new randomly generated documents.
+
+    Args:
+        num_documents (int): The total number of documents to insert.
+                             Defaults to 1,000,000.
+        batch_size (int): The number of documents to insert in each batch.
+                          Defaults to 5,000.
+
+    Returns:
+        None
+
+    Side effects:
+        - Drops the existing ledger_line_items collection.
+        - Inserts new documents into the ledger_line_items collection.
+    """
     # Clear existing data
     db.ledger_line_items.drop()
 
@@ -45,6 +78,24 @@ def random_date(start, end):
 
 
 def bank_balance_forward(days_threshold):
+    """
+    Perform a bank balance forward operation based on a given threshold of days.
+
+    This function processes ledger line items, marking old entries for deletion
+    and calculating new balances for accounts based on recent transactions.
+
+    Args:
+        days_threshold (int): The number of days to look back. Transactions
+                              older than this will be marked for deletion.
+
+    Returns:
+        None
+
+    Side effects:
+        - Marks old ledger entries for deletion in the database.
+        - Updates account balances based on recent transactions.
+        - May modify the ledger_line_items and accounts collections in the database.
+    """
     threshold_date = datetime.now(UTC) - timedelta(days=days_threshold)
     deletion_mark = ObjectId()  # Generate a unique ID for this batch of deletions
 
