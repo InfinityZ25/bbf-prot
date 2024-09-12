@@ -1,22 +1,20 @@
 import random
-import time
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from bson import ObjectId
 from pymongo import ASCENDING, MongoClient
 
-# Connect to the MongoDB replica set
-client = MongoClient(
-    'mongodb://localhost:27017,localhost:27018,localhost:27019/?replicaSet=rs0')
-db = client['your_database_name']
+# Connect to MongoDB
+client = MongoClient('mongodb://localhost:27017')
+db = client['items']
 
 
 def seed_database(num_documents=1000000, batch_size=5000):
     # Clear existing data
     db.ledger_line_items.drop()
 
-    start_date = datetime.utcnow() - timedelta(days=730)  # 2 years ago
-    end_date = datetime.utcnow()
+    start_date = datetime.now(UTC) - timedelta(days=730)  # 2 years ago
+    end_date = datetime.now(UTC)
 
     batch = []
     for i in range(num_documents):
@@ -24,6 +22,7 @@ def seed_database(num_documents=1000000, batch_size=5000):
             'transactionDate': random_date(start_date, end_date),
             'amount': round(random.uniform(-10000, 10000), 2),
             'clientId': str(random.randint(0, 999)),
+            'productId': str(random.randint(0, 99)),
             'category': random.choice(['Business', 'Tax', 'Personal']),
             'status': random.choice(['Pending', 'Completed', 'Cancelled'])
         }
@@ -46,10 +45,11 @@ def random_date(start, end):
 
 
 def bank_balance_forward(days_threshold):
-    threshold_date = datetime.utcnow() - timedelta(days=days_threshold)
+    threshold_date = datetime.now(UTC) - timedelta(days=days_threshold)
+    deletion_mark = ObjectId()  # Generate a unique ID for this batch of deletions
 
-    # Aggregation pipeline
-    pipeline = [
+    # Pipeline for compressing transactions
+    compress_pipeline = [
         {
             '$match': {
                 'transactionDate': {'$lt': threshold_date}
@@ -57,73 +57,119 @@ def bank_balance_forward(days_threshold):
         },
         {
             '$group': {
-                '_id': None,
+                '_id': '$clientId',  # Group by clientId
                 'totalAmount': {'$sum': '$amount'},
-                'transactionIds': {'$push': '$_id'},
-                'minDate': {'$min': '$transactionDate'},
-                'maxDate': {'$max': '$transactionDate'},
-                'count': {'$sum': 1}
+                'transactionCount': {'$sum': 1},
+                'firstTransactionDate': {'$min': '$transactionDate'},
+                'lastTransactionDate': {'$max': '$transactionDate'},
+                # Collect all unique productIds
+                'products': {'$addToSet': '$productId'}
             }
         },
         {
             '$project': {
-                '_id': {'$toString': {'$objectId': ''}},
-                'compressionDate': datetime.utcnow(),
+                '_id': 0,
+                'clientId': '$_id',
+                'compressionDate': datetime.now(UTC),
                 'totalAmount': '$totalAmount',
-                'originalTransactionIds': '$transactionIds',
-                'transactionDateRange': {
-                    'start': '$minDate',
-                    'end': '$maxDate'
+                'transactionCount': '$transactionCount',
+                'dateRange': {
+                    'start': '$firstTransactionDate',
+                    'end': '$lastTransactionDate'
                 },
-                'transactionCount': '$count'
+                'products': 1
             }
         },
         {
-            '$out': 'compressed_transactions'
+            '$merge': {
+                'into': 'compressed_transactions',
+                'whenMatched': 'replace',
+                'whenNotMatched': 'insert'
+            }
         }
     ]
 
-    # Perform aggregation
-    result = list(db.ledger_line_items.aggregate(pipeline))
-
-    # Create adjustment record
-    last_compressed = db.compressed_transactions.find_one(
-        sort=[('compressionDate', -1)])
-    if last_compressed:
-        adjustment_record = {
-            'adjustmentDate': datetime.utcnow(),
-            'resultingBalance': last_compressed['totalAmount']
+    # Pipeline for marking transactions for deletion
+    mark_pipeline = [
+        {
+            '$match': {
+                'transactionDate': {'$lt': threshold_date}
+            }
+        },
+        {
+            '$addFields': {
+                'mark_for_deletion_id': deletion_mark
+            }
+        },
+        {
+            '$merge': {
+                'into': 'ledger_line_items',
+                'whenMatched': 'merge',
+                'whenNotMatched': 'discard'
+            }
         }
-        db.adjustment_records.insert_one(adjustment_record)
+    ]
 
-    # Remove original transactions
-    db.ledger_line_items.delete_many(
-        {'transactionDate': {'$lt': threshold_date}})
+    # Pipeline for archiving marked transactions
+    archive_pipeline = [
+        {
+            '$match': {
+                'mark_for_deletion_id': deletion_mark
+            }
+        },
+        {
+            '$out': 'archived_items'
+        }
+    ]
+
+    # Execute compress pipeline
+    db.ledger_line_items.aggregate(compress_pipeline)
+
+    # Execute mark pipeline
+    db.ledger_line_items.aggregate(mark_pipeline)
+
+    # Execute archive pipeline
+    db.ledger_line_items.aggregate(archive_pipeline)
+
+    # Remove archived documents from the main collection using the deletion mark
+    delete_result = db.ledger_line_items.delete_many(
+        {'mark_for_deletion_id': deletion_mark})
+
+    # Get results
+    compressed_count = db.compressed_transactions.count_documents({})
+    archived_count = db.archived_items.count_documents({})
+    remaining_count = db.ledger_line_items.count_documents({})
 
     return {
-        'compressed_count': last_compressed['transactionCount'] if last_compressed else 0,
-        'total_amount': last_compressed['totalAmount'] if last_compressed else 0
+        'compressed_count': compressed_count,
+        'archived_count': archived_count,
+        'deleted_count': delete_result.deleted_count,
+        'remaining_count': remaining_count
     }
 
 
 # Run the process
 if __name__ == '__main__':
-    # Seed the database
+    # Seed the database (uncomment if you need to generate new data)
     print("Seeding the database...")
-    seed_start_time = time.time()
+    seed_start_time = datetime.now(UTC)
     seed_database(num_documents=1000000, batch_size=5000)
-    seed_end_time = time.time()
-    print(f"Database seeded in {seed_end_time - seed_start_time:.2f} seconds")
+    seed_end_time = datetime.now(UTC)
+    print(f"Database seeded in {
+          (seed_end_time - seed_start_time).total_seconds():.2f} seconds")
 
-    # Run the Bank Balance Forward process
     print("\\nRunning Bank Balance Forward process...")
     days_threshold = 30  # Adjust as needed
 
-    start_time = time.time()
+    start_time = datetime.now(UTC)
     result = bank_balance_forward(days_threshold)
-    end_time = time.time()
+    end_time = datetime.now(UTC)
 
     print(f"Bank Balance Forward process completed in {
-          end_time - start_time:.2f} seconds")
+          (end_time - start_time).total_seconds():.2f} seconds")
     print(f"Compressed {result['compressed_count']} transactions")
-    print(f"Total amount: {result['total_amount']}")
+    print(f"Archived {result['archived_count']} original transactions")
+    print(f"Deleted {result['deleted_count']
+                     } transactions from main collection")
+    print(f"Remaining transactions in main collection: {
+          result['remaining_count']}")

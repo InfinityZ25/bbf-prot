@@ -1,17 +1,32 @@
 #!/bin/bash
-# Wait for other MongoDB instances to be up and running
-sleep 10
 
-# Run the MongoDB shell command to initiate the replica set
-mongo -- "$MONGO_INITDB_DATABASE" <<EOF
-var config = {
-    "_id": "rs0",
-    "members": [
-        { "_id": 0, "host": "mongo1:27017" },
-        { "_id": 1, "host": "mongo2:27017" },
-        { "_id": 2, "host": "mongo3:27017" }
-    ]
-};
-rs.initiate(config);
-rs.status();
+RETRIES=10
+
+until docker exec mongo1 mongosh --host 172.20.0.2 --eval "print(\"waited for connection\")"
+do
+  echo "waiting for MongoDB to be ready..."
+  sleep 5
+  RETRIES=$((RETRIES-1))
+  if [ $RETRIES -lt 1 ]
+  then
+    echo "Giving up!"
+    exit 1
+  fi
+done
+
+echo "Connected. Initializing replica set..."
+
+docker exec mongo1 mongosh --host 172.20.0.2 <<EOF
+rs.initiate({
+  _id: "rs0",
+  members: [
+    { _id: 0, host: "172.20.0.2:27017" },
+    { _id: 1, host: "172.20.0.3:27017" },
+    { _id: 2, host: "172.20.0.4:27017" }
+  ]
+})
 EOF
+
+echo "Replica set initialized."
+
+echo "Setup complete."
